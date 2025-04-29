@@ -1,0 +1,160 @@
+---
+title: Describing Salary by Age among U.S. Adults in 2023, Controlling for Individual’s
+  Work Hours, Education, and Sex
+author: "Joe Wang, Cat Weiss, and Anni Yao"
+output: pdf_document
+bibliography: citations.bib  
+geometry: margin=2cm
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(pacman)
+
+knitr::opts_chunk$set(fig.height = 3, fig.width = 7)
+
+# Load packages.
+pacman::p_load(pacman, RMySQL, tidyverse, janitor, here, skimr, writexl, readxl, googlesheets4, ggplot2, dplyr, fastDummies, stargazer, patchwork)
+
+
+# Read file.
+df <- readr::read_csv('/Users/catweiss/MIDS/DataSci203/lab2_dataset.csv')
+df2 <- df[df$A_AGE >14 & df$A_AGE <80 & df$HRSWK > 0 & df$WSAL_VAL > 0,]
+
+#### Split Test vs. Training Set ####
+
+# Splitting test vs. training group
+set.seed(123)
+n_test <- round(0.3*nrow(df2))
+
+test_indices <- sample(nrow(df2), n_test)
+test_df <- df2[test_indices, ]
+train_df <- df2[-test_indices, ]
+
+# Log transform dependent variable.
+train_df <- train_df %>%
+  mutate(LOG_WSAL_VAL = log(WSAL_VAL + 1))
+
+# Create dummy variables.
+train_df$A_SEX <- factor(train_df$A_SEX)
+# train_df$A_HGA <- factor(train_df$A_HGA)
+
+# Makes 'A_HGA'  numeric
+test_df$A_HGA <- as.numeric(as.character(test_df$A_HGA))
+
+# Combine education dummy variables
+train_df$hs_dip <- ifelse(train_df$A_HGA == 39, 1, 0)
+train_df$some_college <- ifelse(train_df$A_HGA == 40, 1, 0)
+train_df$assc <- ifelse(train_df$A_HGA == 41 | test_df$A_HGA == 42, 1, 0)
+train_df$bach <- ifelse(train_df$A_HGA == 43, 1, 0)
+train_df$grad_deg <- ifelse(train_df$A_HGA > 43, 1, 0)
+
+#### Regression on training/confirmation set ####
+# Model 1: salary ~ age
+mod1_t <- lm(WSAL_VAL ~ A_AGE, data = train_df)
+summary(mod1_t)
+
+# Model 2: log salary ~ age
+mod2_t <- lm(LOG_WSAL_VAL ~ A_AGE, data = train_df)
+summary(mod2_t)
+
+# Model 3: log salary ~ age + gender
+mod3_t <- lm(LOG_WSAL_VAL ~ A_AGE + A_SEX, data = train_df)
+summary(mod3_t)
+
+# Model 4: log salary ~ age + gender + edu
+mod4_t <- lm(LOG_WSAL_VAL ~ A_AGE + A_SEX + hs_dip + some_college + assc + bach + grad_deg, data = train_df)
+summary(mod4_t)
+
+# Model 5: log salary ~ age + gender + edu + hrswk
+# 1 - 4th, 7 - 9th grade have a stat sig relationship
+# PHD has a stat sig relationship
+# HRSWK has a stat sign, positive relationship
+# A_AGE has a stat sig, negative relationship
+mod5_t <- lm(LOG_WSAL_VAL ~ A_AGE + HRSWK + A_SEX + hs_dip + some_college + assc + bach + grad_deg, data = train_df)
+summary(mod5_t)
+
+#squaring age
+train_df <- train_df %>%
+  mutate(QUAD_AGE = A_AGE^2)
+
+
+
+mod6_t <- lm(LOG_WSAL_VAL ~ QUAD_AGE + HRSWK + A_SEX + hs_dip + some_college + assc + bach + grad_deg, data = train_df)
+summary(mod6_t)
+
+# Practical significance: moderate
+cohen <- (summary(mod5_t)$r.squared / (1 - summary(mod5_t)$r.squared))
+cohen
+
+# Plot the data points with linear regression line
+lin_plot <-ggplot(mod5_t, aes(x = A_AGE, y = LOG_WSAL_VAL)) +
+  geom_point() +  # Add points
+  geom_smooth(method = "lm", se = FALSE) +  # Add linear regression line without confidence interval
+  labs(x = "Age", y = "Log Transformed Salary", title = "Linear Regression Model")  # Label axes and add title
+
+# Plot prediction + residuals
+resid_plot <- train_df %>%
+  mutate(mod5_t_preds = predict(mod5_t),
+         mod5_t_resids = resid(mod5_t)) %>%
+  ggplot(aes(mod5_t_preds, mod5_t_resids)) + geom_point() + stat_smooth() +
+  labs(x = "Predictions", y = "Residuals", title = "Residuals vs. Fitted Values")
+```
+## Introduction
+The United States has undergone high inflation in recent years and a changing job landscape due to the COVID-19 Pandemic and economic changes. This has led to an increase in the conversation around work life balance and quality of life. The American Psychological Association conducted a work and wellbeing survey in 2021 where 56% of workers reported that low salaries significantly or somewhat impact their stress levels at work. In this same survey, 50% of workers reported that their workload significantly or somewhat impacted their stress levels at work [@APA]. Furthermore, the American Institute of Stress reported that over half of workers said they often spend 12-hour days on work related duties and an equal number frequently skip lunch because of the stress of job demands[@AIS]. 
+
+Using the Annual Social and Economic Supplemental Data (ASEC) from the Current Population Study conducted by the Bureau of the Census for the Bureau of Labor Statistics, we were interested to explore the relationship between salary and age when taking into account covariates like individual’s work hours, education level, and sex. While the studies above tell us that low salaries and work hours are associated with higher stress levels at work, we want to explore how these variables (salary and work hours) differ across age among US adults. In this paper we will use a descriptive analysis to examine the following research questions: What is the relationship between age and salary for working individuals aged 15 - 79 in the United States? Specifically, how do these variables differ across sex, hours worked per week, and level of education?
+
+
+## Conceptualization and Operationalization
+
+The ASEC is data collected by the Bureau of the Census. The sample is based on the civilian population of the United States and represents 1,328 counties and independent cities from every state and in the District of Columbia. 70,000 households are randomly selected from the Master Address File kept by the Bureau and contacted via mail each month to complete the ASEC survey. The data we use in this descriptive analysis is the compiled data from 2023. The dataset contains 1595 person level variables, but we chose to only examine wage and salary as our Y or dependent variable, defined as the total wage and salary earnings for 2023 of the individual in US dollars. The X or independent variable we chose to use is age, defined as the age in years of the individual filling out the survey. We also used hours worked (defined as the hours usually worked per week by the individual), sex (defined as male or female), and educational attainment (a categorical variable representing the amount of education the individual has completed consisting of less than high school diploma, high school diploma or equivalent, some college, associate degree, bachelor degree, or graduate degree) as our additional independent covariate terms.
+
+We also include this key definition:
+
+**Worker**: An individual that has a greater than 0 salary and is of working age (15-79).
+
+Our descriptive analysis uses the following hypotheses:
+
+$H_0$: $\beta_1 = 0$; a one unit change in age does not lead to any change in salary
+
+$H_A$: $\beta_1 \neq 0$; a one unit change in age does lead to a change in salary
+
+## Data Understanding
+Starting with 146,133 individuals from the Current Population Survey, we focused on individuals aged 15-79 with positive salaries in 2023, retaining top coded outliers ($1,099,999 annual salary) for high-earner representation. After excluding individuals 80 and above due to categorical age coding and those with zero reported work hours, the final dataset comprised 68,847 observations. This was split into a test set (20,654) and a training set (48,193). We log-transformed salaries to address right-skewness (kurtosis of 66.86) and created dummy variables for education and sex for our regression models. While we did consider a quadratic transformation of age, due to its inverted U-shape relationship with salary, we found that a quadratic transformation did not yield a better adjusted R squared (42%). We did not leave out any covariates, as they all progressively improved our model precision.
+
+## Limitations and Model Assumptions
+When diving into the 2023 U.S. Census dataset, our model assumptions hold that our data is independent. We also assume that the relationship between wage and the predictors variables: Age, Gender, Hours Worked, and Education levels to be Linear. We assume homoskedasticity in our data where variances in wages are consistent across different groups.  Even though we observed left skewness (-1.3 skewness) and heavy tails (9.8 kurtosis), we did not find any deviation from our coefficients or statistical significance with the use of robust standard errors, and that our predictor variables are not in perfect correlation with each other.
+
+Since the census uses self reported data, there could be bias in our dataset. There is possible omitted variable bias in the model such as: job satisfaction / job title, industry sector, non-wage benefits, location, race, etc. There is also the limitation of generalizability where census data collection might exclude specific niche regions in the US.
+
+
+## Results and Interpretation
+
+We fit multiple linear regression models to best describe the relationship between salary (dependent variable) and age (independent variable).The first model describes salary as a function of age without any transformation. The second model describes log transformed salary as a function of age, hours worked, sex, and educational attainment. The educational attainment base case is less than a high school diploma level of education. We performed a log transformation on salary to address the right skew of the variable. Below is the linear regression line with the log transformed salary as the Y value and age in years as the X value, as well as a plot with the residuals plotted against the predicted values. While not shown here due to page size limitations, we did perform three intermediary models by progressively introducing and testing the accuracy of base model with (1) log-transformed salary, (2) the addition of sex, and (3) the additional educational attainment. Each intermediary model improved our adjusted R squared, with educational attainment and hours worked having the biggest impact on our final adjusted R squared.
+
+```{r, echo=FALSE, message=FALSE}
+combined_plot_results_interp <- lin_plot | resid_plot
+combined_plot_results_interp
+```
+
+
+In the below table you can see the coefficients of each independent variable for each model. Ceteris paribus, the second model shoes about a 1% increase in salary with each additional year in age. The adjusted $R^2$ is 0.430 and each coefficient is statistically significant. 
+
+```{r,echo=FALSE, results='asis', message=FALSE}
+# Stargazer table
+stargazer(mod1_t,mod5_t,
+          type = "latex", 
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          report=('vc*p'), title="Describing Salary Regression",
+          covariate.labels=c("Age", "Hours Worked Per Week (on average)", "Female", "Highschool Diploma", "Some College", "Associate Degree", "Bachelor Degree", "Graduate Degree"), dep.var.labels=c("Wages and Salary Earned (not transformed)", "Log Transformed Wages and Salary"), float = FALSE, header=FALSE, no.space = TRUE,           single.row = TRUE, column.sep.width = "3pt", font.size = "small")
+
+```
+
+The Cohen’s D test statistic is 0.755 which indicates a moderate to large practical significance. In terms of omitted variable bias, it is possible that data like job title, industry, and location of the individual could help describe salary as well.
+
+## Conclusion
+Our analysis explored the link between age and salary among working individuals in the US, considering factors like sex, work hours, and education. We found a statistically significant, positive correlation, with a one-year age increase associated with a 1.1% rise in salary, holding other variables constant. This has a moderate to large practical significance. While not implying causation, this insight benefits various sectors, including workforce analytics for assessing pay gaps and retirement planning. Further research could incorporate omitted variables, such as industry tenure, and investigate the observed gender pay gap through interaction effects to pinpoint contributing factors.
+
+
+## References
